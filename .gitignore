@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.vite/
+.env
+.env.*
+*.log
+Dev Resource Folder-20260519T143729Z-3-001/
+Dev Resource Folder-20260519T143729Z-3-001.zip

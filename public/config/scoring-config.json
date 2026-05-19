@@ -1,0 +1,41 @@
+{
+  "version": "2026.05.baseline",
+  "method": "deterministic-keyword-overlap",
+  "weights": {
+    "niche": 40,
+    "dr": 15,
+    "traffic": 15,
+    "price": 10,
+    "ranking": 10,
+    "geo": 5,
+    "redFlags": 5
+  },
+  "defaults": {
+    "minimumDr": 45,
+    "minimumTraffic": 2000,
+    "shortlistSize": 50
+  },
+  "hardRules": {
+    "drBelowMinimum": true,
+    "trafficBelowMinimum": true,
+    "nofollowWhenDofollowRequired": true,
+    "poorRanking": true
+  },
+  "overrides": [
+    {
+      "industryContains": "ecommerce",
+      "weights": {
+        "niche": 50,
+        "price": 12,
+        "dr": 12,
+        "traffic": 12,
+        "ranking": 8,
+        "geo": 3,
+        "redFlags": 3
+      }
+    }
+  ],
+  "prompts": {
+    "nicheReasoning": "Explain in one concise sentence why this publisher domain is or is not topically relevant to the client brief."
+  }
+}
