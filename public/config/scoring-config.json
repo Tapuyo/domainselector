@@ -11,8 +11,8 @@
     "redFlags": 5
   },
   "defaults": {
-    "minimumDr": 45,
-    "minimumTraffic": 2000,
+    "minimumDr": 50,
+    "minimumTraffic": 3000,
     "shortlistSize": 50
   },
   "hardRules": {

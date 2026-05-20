@@ -23,7 +23,29 @@ import "./styles.css";
 const INVENTORY_URL = "/data/inventory.csv";
 const CONFIG_URL = "/config/scoring-config.json";
 const CAMPAIGN_KEY = "domainselector.campaign.v1";
+const CAMPAIGN_ID_KEY = "domainselector.currentCampaignId.v1";
+const CAMPAIGNS_KEY = "domainselector.savedCampaigns.v1";
 const CONFIG_KEY = "domainselector.scoringConfig.v1";
+const CONFIG_HISTORY_KEY = "domainselector.scoringConfigHistory.v1";
+const SELECTED_KEY = "domainselector.selectedDomains.v1";
+const ACTIVE_STEP_KEY = "domainselector.activeStep.v1";
+const REQUIRED_COLUMNS = [
+  "Domain",
+  "DR",
+  "Traffic",
+  "Country. Traffic",
+  "Niche",
+  "Main",
+  "Complementary",
+  "Indirect",
+  "GP Price",
+  "LI Price",
+  "Link Type",
+  "TAT",
+  "Red Flags",
+  "Ranking",
+  "Contact"
+];
 
 const steps = [
   "Client Info",
@@ -44,6 +66,7 @@ const initialCampaign = {
   accountManager: "Sarah",
   startDate: "",
   contractValue: 5000,
+  budgetPerLink: 500,
   billingCycle: "Monthly",
   targetPages: [{ url: "freshbooks.com", keyword: "best project software", type: "Product page" }],
   anchorStrategy: "Natural / Mixed",
@@ -53,8 +76,8 @@ const initialCampaign = {
   contentApproval: "No - BlueTree handles content",
   competitors: "",
   minimumDa: 30,
-  minimumDr: 45,
-  minimumTraffic: 2000,
+  minimumDr: 50,
+  minimumTraffic: 3000,
   linkRequirement: "Dofollow only",
   niches: "SaaS, B2B tech, project management, HR software",
   geo: "Global",
@@ -71,6 +94,18 @@ const initialCampaign = {
   salesNotes: "",
   onboardingNotes: ""
 };
+
+function readJson(key, fallback) {
+  try {
+    return JSON.parse(localStorage.getItem(key) || "null") || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function writeJson(key, value) {
+  localStorage.setItem(key, JSON.stringify(value));
+}
 
 function parseCsv(text) {
   const rows = [];
@@ -103,7 +138,14 @@ function parseCsv(text) {
     rows.push(row);
   }
   const headerIndex = rows.findIndex((r) => r[0] === "Domain");
+  if (headerIndex < 0) {
+    throw new Error("Malformed CSV: could not find the Domain header row.");
+  }
   const headers = rows[headerIndex];
+  const missing = REQUIRED_COLUMNS.filter((column) => !headers.includes(column));
+  if (missing.length) {
+    throw new Error(`Inventory CSV is missing required columns: ${missing.join(", ")}.`);
+  }
   return rows.slice(headerIndex + 1).map((r, index) => {
     const item = { id: index + 1 };
     headers.forEach((h, i) => {
@@ -160,9 +202,10 @@ function scoreDomain(domain, campaign, config) {
 
   const drScore = Math.min(weights.dr, Math.max(0, Math.round(((dr - minDr) / (85 - minDr)) * weights.dr)));
   const trafficScore = Math.min(weights.traffic, Math.max(0, Math.round((Math.log10(Math.max(traffic / minTraffic, 1)) / Math.log10(50)) * weights.traffic)));
-  const perLinkBudget = numberFrom(campaign.contractValue) && numberFrom(campaign.monthlyLinks)
-    ? numberFrom(campaign.contractValue) / numberFrom(campaign.monthlyLinks)
-    : numberFrom(campaign.budgetPerLink || 0);
+  const perLinkBudget = numberFrom(campaign.budgetPerLink)
+    || (numberFrom(campaign.contractValue) && numberFrom(campaign.monthlyLinks)
+      ? numberFrom(campaign.contractValue) / numberFrom(campaign.monthlyLinks)
+      : 0);
   const price = priceFor(domain);
   const priceScore = perLinkBudget && price && price <= perLinkBudget
     ? Math.min(weights.price, Math.round(((perLinkBudget - price) / perLinkBudget) * weights.price))
@@ -187,31 +230,46 @@ function scoreDomain(domain, campaign, config) {
 }
 
 function App() {
-  const [active, setActive] = useState(0);
-  const [campaign, setCampaign] = useState(() => JSON.parse(localStorage.getItem(CAMPAIGN_KEY) || "null") || initialCampaign);
+  const [active, setActive] = useState(() => numberFrom(localStorage.getItem(ACTIVE_STEP_KEY)) || 0);
+  const [campaign, setCampaign] = useState(() => readJson(CAMPAIGN_KEY, initialCampaign));
+  const [campaignId, setCampaignId] = useState(() => localStorage.getItem(CAMPAIGN_ID_KEY) || "");
+  const [savedCampaigns, setSavedCampaigns] = useState(() => readJson(CAMPAIGNS_KEY, []));
   const [config, setConfig] = useState(null);
   const [domains, setDomains] = useState([]);
-  const [selected, setSelected] = useState(() => new Set());
+  const [selected, setSelected] = useState(() => new Set(readJson(SELECTED_KEY, [])));
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState("score");
   const [tab, setTab] = useState("shortlist");
   const [shortlistSize, setShortlistSize] = useState(50);
   const [notice, setNotice] = useState("");
+  const [loadError, setLoadError] = useState("");
   const [budgetWarning, setBudgetWarning] = useState(null);
 
   useEffect(() => {
     Promise.all([fetch(INVENTORY_URL).then((r) => r.text()), fetch(CONFIG_URL).then((r) => r.json())])
       .then(([csv, cfg]) => {
+        const parsedConfig = readJson(CONFIG_KEY, cfg);
         setDomains(parseCsv(csv));
-        setConfig(JSON.parse(localStorage.getItem(CONFIG_KEY) || "null") || cfg);
-        setShortlistSize(cfg.defaults?.shortlistSize || 50);
+        setConfig(parsedConfig);
+        setShortlistSize(parsedConfig.defaults?.shortlistSize || cfg.defaults?.shortlistSize || 50);
       })
-      .catch(() => setNotice("Could not load inventory or scoring config."));
+      .catch((error) => {
+        setLoadError(error.message || "Could not load inventory or scoring config.");
+        setNotice(error.message || "Could not load inventory or scoring config.");
+      });
   }, []);
 
   useEffect(() => {
-    localStorage.setItem(CAMPAIGN_KEY, JSON.stringify(campaign));
+    writeJson(CAMPAIGN_KEY, campaign);
   }, [campaign]);
+
+  useEffect(() => {
+    writeJson(SELECTED_KEY, [...selected]);
+  }, [selected]);
+
+  useEffect(() => {
+    localStorage.setItem(ACTIVE_STEP_KEY, String(active));
+  }, [active]);
 
   const currentConfig = useMemo(() => config ? effectiveConfig(config, campaign) : null, [config, campaign]);
   const scored = useMemo(() => {
@@ -249,7 +307,9 @@ function App() {
     acc.dr += numberFrom(domain.DR);
     return acc;
   }, { cost: 0, dr: 0 });
-  const budget = numberFrom(campaign.contractValue);
+  const budget = numberFrom(campaign.budgetPerLink) && numberFrom(campaign.monthlyLinks)
+    ? numberFrom(campaign.budgetPerLink) * numberFrom(campaign.monthlyLinks)
+    : numberFrom(campaign.contractValue);
   const totalSnapshot = { ...totals, budget, count: selectedDomains.length, averageDr: selectedDomains.length ? totals.dr / selectedDomains.length : 0 };
   const isOverBudget = totalSnapshot.cost > totalSnapshot.budget;
 
@@ -272,8 +332,36 @@ function App() {
     update(key, [...values]);
   };
   const saveCampaign = () => {
-    localStorage.setItem(CAMPAIGN_KEY, JSON.stringify(campaign));
-    setNotice("Campaign saved locally.");
+    const id = campaignId || `${Date.now()}`;
+    const record = {
+      id,
+      name: campaign.clientName || "Untitled campaign",
+      campaign,
+      selected: [...selected],
+      savedAt: new Date().toISOString()
+    };
+    const next = [record, ...savedCampaigns.filter((item) => item.id !== id)].slice(0, 25);
+    setCampaignId(id);
+    localStorage.setItem(CAMPAIGN_ID_KEY, id);
+    setSavedCampaigns(next);
+    writeJson(CAMPAIGNS_KEY, next);
+    setNotice("Campaign saved locally and can be reopened later.");
+  };
+  const openCampaign = (record) => {
+    setCampaign(record.campaign);
+    setSelected(new Set(record.selected || []));
+    setCampaignId(record.id);
+    localStorage.setItem(CAMPAIGN_ID_KEY, record.id);
+    setActive(0);
+    setNotice(`Reopened ${record.name}.`);
+  };
+  const newCampaign = () => {
+    setCampaign(initialCampaign);
+    setSelected(new Set());
+    setCampaignId("");
+    localStorage.removeItem(CAMPAIGN_ID_KEY);
+    setActive(0);
+    setNotice("Started a new campaign.");
   };
   const copyBrief = async () => {
     await navigator.clipboard.writeText(briefText(campaign, selectedDomains, currentConfig));
@@ -303,7 +391,7 @@ function App() {
       "Order Start Date": campaign.startDate,
       "Order Deadline": "",
       "Link Volume": campaign.monthlyLinks,
-      "Budget Per Target": budget / Math.max(numberFrom(campaign.monthlyLinks), 1),
+      "Budget Per Target": numberFrom(campaign.budgetPerLink) || budget / Math.max(numberFrom(campaign.monthlyLinks), 1),
       "Min. DR": campaign.minimumDr,
       "Min. Traffic": campaign.minimumTraffic,
       "Order Payment Date": "Unpaid",
@@ -341,8 +429,8 @@ function App() {
       "Target URL": campaign.targetPages[i % campaign.targetPages.length]?.url || "",
       "Anchor Text": campaign.anchorStrategy,
       "Link Type": d["Link Type"],
-      "Budget": budget / Math.max(numberFrom(campaign.monthlyLinks), 1),
-      "Profit": (budget / Math.max(numberFrom(campaign.monthlyLinks), 1)) - d.scoring.price,
+      "Budget": numberFrom(campaign.budgetPerLink) || budget / Math.max(numberFrom(campaign.monthlyLinks), 1),
+      "Profit": { formula: `P${i + 2}-I${i + 2}` },
       "Status": "Planned",
       "Publishing Date": "",
       "Contact Email": d.Contact,
@@ -390,7 +478,12 @@ function App() {
   };
 
   if (!config) {
-    return <Shell><div className="loading">Loading inventory and scoring config...</div></Shell>;
+    return <Shell notice={notice} setNotice={setNotice}>
+      <div className={loadError ? "errorState" : "loading"}>
+        <h1>{loadError ? "Could not load DomainSelector" : "Loading inventory and scoring config..."}</h1>
+        {loadError && <p>{loadError}</p>}
+      </div>
+    </Shell>;
   }
 
   return (
@@ -401,8 +494,10 @@ function App() {
           <strong>DomainSelector</strong>
           <span>BlueTree Digital campaign workspace</span>
         </div>
+        <button className="ghost iconText" onClick={newCampaign}><Plus size={16} /> New</button>
         <button className="ghost iconText" onClick={() => goToStep(6)}><Clipboard size={16} /> Brief</button>
       </header>
+      <CampaignLibrary campaigns={savedCampaigns} currentId={campaignId} openCampaign={openCampaign} />
       <nav className="steps">
         {steps.map((step, i) => (
           <button key={step} className={active === i ? "active" : ""} onClick={() => goToStep(i)}>
@@ -418,6 +513,7 @@ function App() {
       {active === 5 && (
         <DomainMatching
           campaign={campaign}
+          domains={domains}
           config={currentConfig}
           rawConfig={config}
           setConfig={setConfig}
@@ -446,6 +542,7 @@ function App() {
           setActive={setActive}
           copyBrief={copyBrief}
           exportWorkbook={exportWorkbook}
+          saveCampaign={saveCampaign}
         />
       )}
       <footer className="footer">
@@ -482,6 +579,25 @@ function Shell({ children, notice, setNotice }) {
   );
 }
 
+function CampaignLibrary({ campaigns, currentId, openCampaign }) {
+  if (!campaigns.length) {
+    return null;
+  }
+  return (
+    <aside className="campaignShelf" aria-label="Saved campaigns">
+      <strong>Saved campaigns</strong>
+      <div>
+        {campaigns.slice(0, 6).map((record) => (
+          <button key={record.id} className={record.id === currentId ? "active" : ""} onClick={() => openCampaign(record)}>
+            <span>{record.name}</span>
+            <small>{new Date(record.savedAt).toLocaleDateString()}</small>
+          </button>
+        ))}
+      </div>
+    </aside>
+  );
+}
+
 function Section({ title, subtitle, children }) {
   return <section className="section"><h1>{title}</h1><p>{subtitle}</p><div className="rule" />{children}</section>;
 }
@@ -502,7 +618,8 @@ function ClientInfo({ campaign, update }) {
         <Field label="Assigned Account Manager"><input value={campaign.accountManager} onChange={(e) => update("accountManager", e.target.value)} /></Field>
         <Field label="Campaign Start Date"><input type="date" value={campaign.startDate} onChange={(e) => update("startDate", e.target.value)} /></Field>
         <Field label="Billing Cycle"><select value={campaign.billingCycle} onChange={(e) => update("billingCycle", e.target.value)}><option>Monthly</option><option>One-time</option><option>Quarterly</option></select></Field>
-        <Field label="Contract Value ($)" hint="Monthly value"><input type="number" value={campaign.contractValue} onChange={(e) => update("contractValue", e.target.value)} /></Field>
+        <Field label="Contract Value ($)" hint="Monthly value used for total budget"><input type="number" value={campaign.contractValue} onChange={(e) => update("contractValue", e.target.value)} /></Field>
+        <Field label="Budget Per Link ($)" hint="Required for price-efficiency scoring"><input type="number" value={campaign.budgetPerLink} onChange={(e) => update("budgetPerLink", e.target.value)} /></Field>
       </div>
     </Section>
   );
@@ -543,8 +660,8 @@ function DomainCriteria({ campaign, update }) {
     <Section title="Domain Criteria" subtitle="Quality thresholds used to filter inventory">
       <div className="grid two">
         <Field label="Minimum DA (Moz)"><input type="number" value={campaign.minimumDa} onChange={(e) => update("minimumDa", e.target.value)} /></Field>
-        <Field label="Minimum DR (Ahrefs)" hint="Hard minimum - below this is filtered out"><input type="number" value={campaign.minimumDr} onChange={(e) => update("minimumDr", e.target.value)} /></Field>
-        <Field label="Minimum Monthly Traffic"><input type="number" value={campaign.minimumTraffic} onChange={(e) => update("minimumTraffic", e.target.value)} /></Field>
+        <Field label="Minimum DR (Ahrefs)" hint="Defaults to 50; below this is filtered out"><input type="number" value={campaign.minimumDr} onChange={(e) => update("minimumDr", e.target.value)} /></Field>
+        <Field label="Minimum Monthly Traffic" hint="Defaults to 3,000"><input type="number" value={campaign.minimumTraffic} onChange={(e) => update("minimumTraffic", e.target.value)} /></Field>
         <Field label="Link Type Requirement"><select value={campaign.linkRequirement} onChange={(e) => update("linkRequirement", e.target.value)}><option>Dofollow only</option><option>Either dofollow or nofollow</option></select></Field>
       </div>
       <Field label="Preferred Niches / Topics" hint="More specific topics improve matching"><textarea rows="4" value={campaign.niches} onChange={(e) => update("niches", e.target.value)} /></Field>
@@ -589,7 +706,7 @@ function NoteBox({ title, value, onChange }) {
 
 function DomainMatching(props) {
   const {
-    config, rawConfig, setConfig, shortlist, excluded, selected, setSelected, query, setQuery, sort, setSort,
+    domains, config, rawConfig, setConfig, shortlist, excluded, selected, setSelected, query, setQuery, sort, setSort,
     shortlistSize, setShortlistSize, totals, tab, setTab
   } = props;
   const toggle = (id) => {
@@ -600,6 +717,11 @@ function DomainMatching(props) {
   return (
     <Section title="Domain Matching" subtitle="Scored shortlist from the paid sites inventory">
       <Stats totals={totals} />
+      <div className="runSummary">
+        <Info label="Inventory Rows" value={formatNumber(domains.length)} />
+        <Info label="Scoring Config" value={config.version} />
+        <Info label="Repeatability" value="Deterministic for same brief, inventory, and config" />
+      </div>
       <div className="toolbar">
         <div className="search"><Search size={16} /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search domains, niches, or contacts" /></div>
         <select value={sort} onChange={(e) => setSort(e.target.value)}><option value="score">Score</option><option value="dr">DR</option><option value="traffic">Traffic</option><option value="price">Price</option></select>
@@ -612,7 +734,7 @@ function DomainMatching(props) {
       </div>
       {tab === "shortlist" && <DomainTable domains={shortlist} selected={selected} toggle={toggle} />}
       {tab === "excluded" && <ExcludedTable domains={excluded.slice(0, 100)} />}
-      {tab === "config" && <ConfigPanel config={config} rawConfig={rawConfig} setConfig={setConfig} />}
+      {tab === "config" && <ConfigPanel rawConfig={rawConfig} setConfig={setConfig} />}
     </Section>
   );
 }
@@ -653,14 +775,15 @@ function BudgetWarning({ totals, onContinue, onBack }) {
 }
 
 function DomainTable({ domains, selected, toggle }) {
-  return <div className="tableWrap"><table><thead><tr><th></th><th>Domain</th><th>Score</th><th>Metrics</th><th>Price</th><th>Reasoning</th><th>Contact</th></tr></thead><tbody>
+  return <div className="tableWrap"><table><thead><tr><th></th><th>Domain</th><th>Score</th><th>Metrics</th><th>Price</th><th>Reasoning</th><th>Red Flags</th><th>Contact</th></tr></thead><tbody>
     {domains.map((d) => <tr key={d.id} className={selected.has(d.id) ? "picked" : ""}>
       <td><button className="checkButton" onClick={() => toggle(d.id)}>{selected.has(d.id) ? <Check size={16} /> : <Plus size={16} />}</button></td>
       <td><strong>{d.Domain}</strong><span>{compactText(d.Main || d.Niche, 70)}</span></td>
       <td><div className="score">{d.scoring.score}</div><Breakdown breakdown={d.scoring.breakdown} /></td>
-      <td><span>DR {d.DR}</span><span>{formatNumber(numberFrom(d.Traffic))} traffic</span><span>{d["Link Type"] || "Link type n/a"}</span><span>{d.TAT || "TAT n/a"}</span></td>
+      <td><span>DR {d.DR}</span><span>{formatNumber(numberFrom(d.Traffic))} traffic</span><span>{d["Country. Traffic"] || "Geo n/a"}</span><span>{d["Link Type"] || "Link type n/a"}</span><span>{d.TAT || "TAT n/a"}</span></td>
       <td>{formatMoney(d.scoring.price)}</td>
       <td>{d.scoring.reason}</td>
+      <td>{d["Red Flags"] || "Clean"}</td>
       <td>{d.Contact || "No contact"}</td>
     </tr>)}
   </tbody></table></div>;
@@ -678,19 +801,45 @@ function ExcludedTable({ domains }) {
 
 function ConfigPanel({ rawConfig, setConfig }) {
   const [draft, setDraft] = useState(JSON.stringify(rawConfig, null, 2));
+  const [history, setHistory] = useState(() => readJson(CONFIG_HISTORY_KEY, []));
   const save = () => {
-    const parsed = JSON.parse(draft);
-    parsed.version = `${parsed.version || "custom"}-${new Date().toISOString().slice(0, 10)}`;
-    localStorage.setItem(CONFIG_KEY, JSON.stringify(parsed));
-    setConfig(parsed);
+    try {
+      const parsed = JSON.parse(draft);
+      const nextConfig = {
+        ...parsed,
+        version: `${parsed.version || "custom"}-${new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)}`
+      };
+      const nextHistory = [{ ...rawConfig, archivedAt: new Date().toISOString() }, ...history].slice(0, 10);
+      writeJson(CONFIG_HISTORY_KEY, nextHistory);
+      writeJson(CONFIG_KEY, nextConfig);
+      setHistory(nextHistory);
+      setConfig(nextConfig);
+    } catch {
+      alert("Config JSON is invalid. Fix the syntax before saving.");
+    }
+  };
+  const restore = (item) => {
+    const restored = { ...item, version: `${item.version || "restored"}-restored-${new Date().toISOString().slice(0, 10)}` };
+    delete restored.archivedAt;
+    writeJson(CONFIG_KEY, restored);
+    setConfig(restored);
+    setDraft(JSON.stringify(restored, null, 2));
   };
   return <div className="configPanel">
     <div className="configHeader"><SlidersHorizontal size={18} /><div><strong>Runtime Scoring Configuration</strong><span>Weights, hard rules, overrides, and prompts are editable without rebuilding.</span></div><button className="primary iconText" onClick={save}><Save size={16} /> Save Config</button></div>
     <textarea rows="18" value={draft} onChange={(e) => setDraft(e.target.value)} />
+    <div className="configHistory">
+      <strong>Rollback history</strong>
+      {history.length ? history.map((item) => (
+        <button className="ghost" key={`${item.version}-${item.archivedAt}`} onClick={() => restore(item)}>
+          {item.version} <span>{item.archivedAt ? new Date(item.archivedAt).toLocaleString() : ""}</span>
+        </button>
+      )) : <p>No previous config versions yet.</p>}
+    </div>
   </div>;
 }
 
-function CampaignBrief({ campaign, config, selectedDomains, totals, setActive, copyBrief, exportWorkbook }) {
+function CampaignBrief({ campaign, config, selectedDomains, totals, setActive, copyBrief, exportWorkbook, saveCampaign }) {
   return (
     <Section title="Campaign Brief Ready" subtitle={`Generated ${new Date().toLocaleDateString()}`}>
       <div className="briefHero">
@@ -723,9 +872,16 @@ function CampaignBrief({ campaign, config, selectedDomains, totals, setActive, c
         </div>
       </div>
       <div className="actionRow">
+        <button className="ghost iconText" onClick={saveCampaign}><Save size={16} /> Save Campaign</button>
         <button className="ghost iconText" onClick={copyBrief}><Clipboard size={16} /> Copy Brief</button>
         <button className="primary iconText" onClick={exportWorkbook}><FileSpreadsheet size={16} /> Export XLSX</button>
-        <button className="secondary iconText" onClick={() => { localStorage.removeItem(CAMPAIGN_KEY); location.reload(); }}><Trash2 size={16} /> Reset</button>
+        <button className="secondary iconText" onClick={() => {
+          localStorage.removeItem(CAMPAIGN_KEY);
+          localStorage.removeItem(SELECTED_KEY);
+          localStorage.removeItem(CAMPAIGN_ID_KEY);
+          localStorage.removeItem(ACTIVE_STEP_KEY);
+          location.reload();
+        }}><Trash2 size={16} /> Reset</button>
       </div>
     </Section>
   );
